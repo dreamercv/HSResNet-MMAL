@@ -11,23 +11,23 @@ __all__ = [
 
 model_urls = {
     'resnet18':
-    'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+        'https://download.pytorch.org/models/resnet18-5c106cde.pth',
     'resnet34':
-    'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+        'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
     'resnet50':
-    'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+        'https://download.pytorch.org/models/resnet50-19c8e357.pth',
     'resnet101':
-    'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+        'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
     'resnet152':
-    'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
+        'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
     'resnext50_32x4d':
-    'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
+        'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
     'resnext101_32x8d':
-    'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
+        'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
     'wide_resnet50_2':
-    'https://download.pytorch.org/models/wide_resnet50_2-95faca4d.pth',
+        'https://download.pytorch.org/models/wide_resnet50_2-95faca4d.pth',
     'wide_resnet101_2':
-    'https://download.pytorch.org/models/wide_resnet101_2-32ee1156.pth',
+        'https://download.pytorch.org/models/wide_resnet101_2-32ee1156.pth',
 }
 
 
@@ -37,7 +37,7 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
                      out_planes,
                      kernel_size=3,
                      stride=stride,
-                     padding=dilation,
+                     padding=1,
                      groups=groups,
                      bias=False,
                      dilation=dilation)
@@ -49,6 +49,7 @@ def conv1x1(in_planes, out_planes, stride=1):
                      out_planes,
                      kernel_size=1,
                      stride=stride,
+                     padding=0,
                      bias=False)
 
 
@@ -92,10 +93,10 @@ class HSBlock(nn.Module):
     def forward(self, x):
 
         x_0 = self.modulelist[0](x[:, self.first_c:self.first_c +
-                                   self.other_c * 1, :, :])
+                                                   self.other_c * 1, :, :])
         x_01, x_02 = x_0[:, :self.
-                         other_c, :, :], x_0[:, self.other_c:self.other_c *
-                                             2, :, :]
+            other_c, :, :], x_0[:, self.other_c:self.other_c *
+                                                2, :, :]
 
         out_feature = torch.cat([x[:, :self.first_c, :, :], x_01], dim=1)
         x_next2 = x_02
@@ -109,15 +110,108 @@ class HSBlock(nn.Module):
             x_i = self.modulelist[i](x_i)  # 1 102 288 288
             if i != len(self.modulelist) - 1:
                 x_i1, x_i2 = x_i[:, :self.other_c, :, :], x_i[:,
-                                                              self.other_c:self
-                                                              .other_c *
-                                                              2, :, :]
+                                                          self.other_c:self
+                                                                           .other_c *
+                                                                       2, :, :]
                 out_feature = torch.cat([out_feature, x_i1], dim=1)
                 x_next2 = x_i2
             else:
                 out_feature = torch.cat([out_feature, x_i], dim=1)
 
         return self.relu(out_feature)
+
+
+def conv3x3s(in_planes, out_planes, stride=1, padding=1, groups=1, dilation=1):  # same操作
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes,
+                     out_planes,
+                     kernel_size=3,
+                     stride=stride,
+                     padding=padding,
+                     groups=groups,
+                     bias=False,
+                     dilation=dilation)
+
+
+class HSBottleneck(nn.Module):
+    def __init__(self, inc, outc, dowmsample=False, split_num=5):
+        super(HSBottleneck, self).__init__()
+        assert "number of split must > 2"
+        self.inc = inc
+        self.outc = outc
+        self.dowmsample = dowmsample
+        self.split_num = split_num
+
+        self.last_inc = self.inc // self.split_num + self.inc % self.split_num  # 52
+        self.other_inc = self.inc // self.split_num  # 51
+
+        self.last_outc = self.outc // self.split_num + self.outc % self.split_num  # 104
+        self.other_outc = self.outc // self.split_num  # 102
+
+        self.modulelist = nn.ModuleList()
+        for split_i in range(self.split_num):
+            one_split = nn.ModuleList()
+            if split_i == 0:
+                if self.dowmsample:
+                    one_block_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=2),
+                                                nn.BatchNorm2d(self.other_outc))
+                else:
+                    one_block_1 = None
+                one_split.append(one_block_1)
+            elif split_i == 1:
+                if self.dowmsample:
+                    one_block_2 = nn.Sequential(conv3x3(self.other_inc, self.other_outc * 2, stride=2),
+                                                nn.BatchNorm2d(self.other_outc * 2))
+                else:
+                    one_block_2 = nn.Sequential(conv3x3(self.other_inc, self.other_outc * 2),
+                                                nn.BatchNorm2d(self.other_outc * 2))
+                one_split.append(one_block_2)
+            elif split_i == self.split_num - 1:
+                if self.dowmsample:
+                    one_block_last_1 = nn.Sequential(conv3x3(self.last_inc, self.last_inc, stride=2),
+                                                     nn.BatchNorm2d(self.last_inc))
+                else:
+                    one_block_last_1 = None
+                one_block_last_2 = nn.Sequential(conv1x1(self.last_inc + self.other_outc, self.other_outc),
+                                                 nn.BatchNorm2d(self.other_outc))
+                one_split.append(one_block_last_1), one_split.append(one_block_last_2)
+            else:
+                if self.dowmsample:
+                    one_block_middle_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=2),
+                                                       nn.BatchNorm2d(self.other_outc))
+                else:
+                    one_block_middle_1 = None
+                one_block_middle_2 = nn.Sequential(conv3x3(self.other_outc * 2, self.other_outc * 2),
+                                                   nn.BatchNorm2d(self.other_outc * 2))
+                one_split.append(one_block_middle_1), one_split.append(one_block_middle_2)
+            self.modulelist.append(one_split)
+        self.relu = nn.ReLU(inplace=True)
+        print(self.modulelist)
+
+    def forward(self, x):
+        out = x
+        split_1_2 = x
+
+        for i in range(self.split_num):
+            if i == 0 and self.dowmsample:
+                print(self.modulelist[i])
+                out = self.modulelist[i](out)
+            elif i == 1:
+                split_1 = self.modulelist[i](x[:, self.first_inc + self.other_inc * (i - 1):, :, :])
+                split_1_1, split_1_2 = split_1[:, :self.other_outc, :, :], split_1[:, self.other_outc:, :, :]
+                torch.cat((out, split_1_1), dim=1)
+            else:
+                if self.dowmsample:
+                    split_1 = torch.cat((self.modulelist[i][0](x[:, self.first_inc + self.other_inc * (i - 1):, :, :]),
+                                         split_1_2), dim=1)
+                    split_2 = self.modulelist[i][1](split_1)
+                    if i == self.split_num - 1:
+                        torch.cat((out, split_2), dim=1)
+                    else:
+                        split_1_1, split_1_2 = split_2[:, self.other_outc:, :, :], split_2[:, self.other_outc:, :, :]
+                        torch.cat((out, split_1_2), dim=1)
+
+        return out
 
 
 class BasicBlock(nn.Module):
@@ -255,7 +349,7 @@ class ResNet(nn.Module):
         if len(replace_stride_with_dilation) != 3:
             raise ValueError("replace_stride_with_dilation should be None "
                              "or a 3-element tuple, got {}".format(
-                                 replace_stride_with_dilation))
+                replace_stride_with_dilation))
         self.groups = groups
         self.base_width = width_per_group
 
@@ -496,7 +590,8 @@ def wide_resnet101_2(pth_path, pretrained=False, **kwargs):
 if __name__ == '__main__':
     import numpy as np
 
-    net = HSBlock(256)
+    net = HSBottleneck(256, 256, dowmsample=False)
+    # print(net)
     img = torch.ones([1, 256, 288, 288])
     out = net(img)
     print(out.shape)
