@@ -156,7 +156,11 @@ class HSBottleneck(nn.Module):
                     one_block_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=2),
                                                 nn.BatchNorm2d(self.other_outc))
                 else:
-                    one_block_1 = None
+                    if inc != outc:
+                        one_block_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=1),
+                                                    nn.BatchNorm2d(self.other_outc))
+                    else:
+                        one_block_1 = None
                 one_split.append(one_block_1)
             elif split_i == 1:
                 if self.dowmsample:
@@ -171,48 +175,67 @@ class HSBottleneck(nn.Module):
                     one_block_last_1 = nn.Sequential(conv3x3(self.last_inc, self.last_inc, stride=2),
                                                      nn.BatchNorm2d(self.last_inc))
                 else:
-                    one_block_last_1 = None
-                one_block_last_2 = nn.Sequential(conv1x1(self.last_inc + self.other_outc, self.other_outc),
-                                                 nn.BatchNorm2d(self.other_outc))
+                    if inc!=outc:
+                        one_block_last_1 = nn.Sequential(conv3x3(self.last_inc, self.last_inc, stride=1),
+                                                         nn.BatchNorm2d(self.last_inc))
+                    else:
+                        one_block_last_1 = None
+                one_block_last_2 = nn.Sequential(conv1x1(self.last_inc + self.other_outc, self.last_outc),
+                                                 nn.BatchNorm2d(self.last_outc))
                 one_split.append(one_block_last_1), one_split.append(one_block_last_2)
             else:
                 if self.dowmsample:
                     one_block_middle_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=2),
                                                        nn.BatchNorm2d(self.other_outc))
                 else:
-                    one_block_middle_1 = None
+                    if inc!=outc:
+                        one_block_middle_1 = nn.Sequential(conv3x3(self.other_inc, self.other_outc, stride=1),
+                                                           nn.BatchNorm2d(self.other_outc))
+                    else:
+                        one_block_middle_1 = None
                 one_block_middle_2 = nn.Sequential(conv3x3(self.other_outc * 2, self.other_outc * 2),
                                                    nn.BatchNorm2d(self.other_outc * 2))
                 one_split.append(one_block_middle_1), one_split.append(one_block_middle_2)
             self.modulelist.append(one_split)
         self.relu = nn.ReLU(inplace=True)
-        print(self.modulelist)
 
     def forward(self, x):
-        out = x
-        split_1_2 = x
+        out = x[:, :self.other_inc, :, :]
+        need_concat = x
 
         for i in range(self.split_num):
-            if i == 0 and self.dowmsample:
-                print(self.modulelist[i])
-                out = self.modulelist[i](out)
+            if i == 0 :
+                if self.modulelist[i][0]:
+
+                    out = self.modulelist[i][0](out)
+                else:
+                    continue
+                # print(out.shape)
             elif i == 1:
-                split_1 = self.modulelist[i](x[:, self.first_inc + self.other_inc * (i - 1):, :, :])
-                split_1_1, split_1_2 = split_1[:, :self.other_outc, :, :], split_1[:, self.other_outc:, :, :]
-                torch.cat((out, split_1_1), dim=1)
+                split_1 = self.modulelist[i][0](x[:, self.other_inc * i:self.other_inc * (i + 1), :, :])
+                split_1_1, need_concat = split_1[:, :self.other_outc, :, :], split_1[:, self.other_outc:, :, :]
+                out = torch.cat((out, split_1_1), dim=1)
             else:
-                if self.dowmsample:
-                    split_1 = torch.cat((self.modulelist[i][0](x[:, self.first_inc + self.other_inc * (i - 1):, :, :]),
-                                         split_1_2), dim=1)
-                    split_2 = self.modulelist[i][1](split_1)
-                    if i == self.split_num - 1:
-                        torch.cat((out, split_2), dim=1)
+                if i == self.split_num - 1:
+                    if self.modulelist[i][0]:
+                        split_1 = torch.cat((self.modulelist[i][0](x[:, self.other_inc * i:, :, :]), need_concat),
+                                            dim=1)
                     else:
-                        split_1_1, split_1_2 = split_2[:, self.other_outc:, :, :], split_2[:, self.other_outc:, :, :]
-                        torch.cat((out, split_1_2), dim=1)
+                        split_1 = torch.cat((x[:, self.other_inc * i:, :, :], need_concat), dim=1)
+                    split_2 = self.modulelist[i][1](split_1)
+                    out = torch.cat((out, split_2), dim=1)
+                else:
+                    if self.modulelist[i][0]:
+                        split_1 = torch.cat((self.modulelist[i][0](
+                            x[:, self.other_inc * i:self.other_inc * (i + 1), :, :]), need_concat), dim=1)
+                    else:
+                        split_1 = torch.cat((
+                            x[:, self.other_inc * i:self.other_inc * (i + 1), :, :], need_concat), dim=1)
+                    split_2 = self.modulelist[i][1](split_1)
+                    split_2_1, need_concat = split_2[:, self.other_outc:, :, :], split_2[:, self.other_outc:, :, :]
+                    out = torch.cat((out, need_concat), dim=1)
 
-        return out
-
+        return self.relu(out)
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -590,7 +613,7 @@ def wide_resnet101_2(pth_path, pretrained=False, **kwargs):
 if __name__ == '__main__':
     import numpy as np
 
-    net = HSBottleneck(256, 256, dowmsample=False)
+    net = HSBottleneck(256, 512, dowmsample=True)
     # print(net)
     img = torch.ones([1, 256, 288, 288])
     out = net(img)
